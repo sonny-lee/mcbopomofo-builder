@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       upstream_ref:
-        description: "openvanilla/fcitx5-mcbopomofo ref (commit/branch/tag)"
+        description: "openvanilla/fcitx5-mcbopomofo ref (full SHA/branch/tag)"
         required: false
-        default: "faa4972"
+        default: "faa497211bd771a1190235dd7faa9ae384799b2b"
       fcitx5_tag:
         description: "fcitx-contrib/fcitx5-macos release tag for dev SDK"
         required: false
@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: openvanilla/fcitx5-mcbopomofo
-          ref: ${{ inputs.upstream_ref || 'faa4972' }}
+          ref: ${{ inputs.upstream_ref || 'faa497211bd771a1190235dd7faa9ae384799b2b' }}
           path: fcitx5-mcbopomofo
 
       - name: Apply macOS webpanel fix patch
