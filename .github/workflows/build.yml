@@ -43,7 +43,7 @@ jobs:
           path: fcitx5-mcbopomofo
 
       - name: Apply macOS webpanel fix patch
-        if: ${{ inputs.apply_webpanel_patch != false }}
+        if: ${{ github.event_name == 'push' || inputs.apply_webpanel_patch }}
         working-directory: fcitx5-mcbopomofo
         run: |
           git apply ../patches/mcbopomofo-macos-webpanel-fix.patch
@@ -97,6 +97,7 @@ jobs:
 
       - name: Configure and build
         run: |
+          FMT_PREFIX="$(brew --prefix fmt)"
           ICU_PREFIX="$(brew --prefix icu4c)"
           GETTEXT_PREFIX="$(brew --prefix gettext)"
           STATIC_DIR="${{ runner.temp }}/static-deps"
@@ -107,6 +108,7 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="${{ runner.temp }}/stage/usr" \
             -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
+            -DCMAKE_CXX_FLAGS="-I${FMT_PREFIX}/include" \
             -DENABLE_TEST=OFF \
             -DCMAKE_PREFIX_PATH="/Library/Input Methods/Fcitx5.app/Contents;${ICU_PREFIX};${GETTEXT_PREFIX}" \
             -Dfmt_DIR="${STATIC_DIR}/cmake/fmt" \
