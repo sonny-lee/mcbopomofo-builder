@@ -1,0 +1,154 @@
+name: Build McBopomofo for macOS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "openvanilla/fcitx5-mcbopomofo ref (commit/branch/tag)"
+        required: false
+        default: "faa4972"
+      fcitx5_tag:
+        description: "fcitx-contrib/fcitx5-macos release tag for dev SDK"
+        required: false
+        default: "0.4.2"
+      apply_webpanel_patch:
+        description: "Apply mcbopomofo-macos-webpanel-fix.patch"
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream fcitx5-mcbopomofo
+        uses: actions/checkout@v4
+        with:
+          repository: openvanilla/fcitx5-mcbopomofo
+          ref: ${{ inputs.upstream_ref || 'faa4972' }}
+          path: fcitx5-mcbopomofo
+
+      - name: Apply macOS webpanel fix patch
+        if: ${{ inputs.apply_webpanel_patch != false }}
+        working-directory: fcitx5-mcbopomofo
+        run: |
+          git apply ../patches/mcbopomofo-macos-webpanel-fix.patch
+
+      - name: Install build dependencies
+        env:
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+        run: |
+          brew install cmake ninja extra-cmake-modules pkg-config gettext fmt json-c icu4c
+          python3 -m venv "${{ runner.temp }}/venv"
+          "${{ runner.temp }}/venv/bin/pip" install --quiet dirhash
+
+      - name: Download Fcitx5 macOS dev SDK
+        run: |
+          TAG="${{ inputs.fcitx5_tag || '0.4.2' }}"
+          curl --retry 3 -fsSLO "https://github.com/fcitx-contrib/fcitx5-macos/releases/download/${TAG}/Fcitx5-${{ matrix.arch }}-dev.tar.bz2"
+          sudo tar xf "Fcitx5-${{ matrix.arch }}-dev.tar.bz2" -C "/Library/Input Methods"
+
+      - name: Prepare isolated static library overrides
+        run: |
+          FMT_PREFIX="$(brew --prefix fmt)"
+          JSONC_PREFIX="$(brew --prefix json-c)"
+          ICU_PREFIX="$(brew --prefix icu4c)"
+
+          STATIC_DIR="${{ runner.temp }}/static-deps"
+          mkdir -p "${STATIC_DIR}/lib/pkgconfig" "${STATIC_DIR}/cmake/fmt"
+          ln -sf "${JSONC_PREFIX}/lib/libjson-c.a" "${STATIC_DIR}/lib/libjson-c.a"
+
+          cat > "${STATIC_DIR}/lib/pkgconfig/json-c.pc" <<EOF
+          prefix=${JSONC_PREFIX}
+          libdir=${STATIC_DIR}/lib
+          includedir=${JSONC_PREFIX}/include
+
+          Name: json-c
+          Description: A JSON implementation in C (static)
+          Version: 0.19
+          Libs: -L\${libdir} -ljson-c
+          Cflags: -I\${includedir} -I\${includedir}/json-c
+          EOF
+
+          cat > "${STATIC_DIR}/cmake/fmt/fmt-config.cmake" <<EOF
+          if(NOT TARGET fmt::fmt)
+            add_library(fmt::fmt STATIC IMPORTED)
+            set_target_properties(fmt::fmt PROPERTIES
+              IMPORTED_LOCATION "${FMT_PREFIX}/lib/libfmt.a"
+              INTERFACE_INCLUDE_DIRECTORIES "${FMT_PREFIX}/include"
+            )
+          endif()
+          set(fmt_FOUND TRUE)
+          EOF
+
+      - name: Configure and build
+        run: |
+          ICU_PREFIX="$(brew --prefix icu4c)"
+          GETTEXT_PREFIX="$(brew --prefix gettext)"
+          STATIC_DIR="${{ runner.temp }}/static-deps"
+
+          export PKG_CONFIG_PATH="${STATIC_DIR}/lib/pkgconfig"
+          cmake -S fcitx5-mcbopomofo -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${{ runner.temp }}/stage/usr" \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
+            -DENABLE_TEST=OFF \
+            -DCMAKE_PREFIX_PATH="/Library/Input Methods/Fcitx5.app/Contents;${ICU_PREFIX};${GETTEXT_PREFIX}" \
+            -Dfmt_DIR="${STATIC_DIR}/cmake/fmt" \
+            -DICU_UC_LIBRARY_RELEASE="${ICU_PREFIX}/lib/libicuuc.a" \
+            -DICU_I18N_LIBRARY_RELEASE="${ICU_PREFIX}/lib/libicui18n.a" \
+            -DCMAKE_MODULE_LINKER_FLAGS="${ICU_PREFIX}/lib/libicudata.a"
+
+          cmake --build build
+          cmake --install build
+
+      - name: Verify architecture and zero Homebrew dynamic deps
+        run: |
+          SO_PATH="${{ runner.temp }}/stage/usr/lib/fcitx5/mcbopomofo.so"
+          file "${SO_PATH}"
+          lipo -info "${SO_PATH}"
+          otool -L "${SO_PATH}"
+
+          if otool -L "${SO_PATH}" | grep -E '/usr/local|/opt/homebrew'; then
+            echo "ERROR: Found dynamic dependency pointing to Homebrew!"
+            exit 1
+          fi
+
+      - name: Package split archives (arch + any)
+        run: |
+          "${{ runner.temp }}/venv/bin/python" scripts/package.py \
+            --stage-dir "${{ runner.temp }}/stage" \
+            --out-dir dist \
+            --arch "${{ matrix.arch }}"
+          tar -tjf "dist/mcbopomofo-${{ matrix.arch }}.tar.bz2"
+          tar -tjf "dist/mcbopomofo-any.tar.bz2" | head -n 25
+
+      - name: Upload arch-specific archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcbopomofo-${{ matrix.arch }}
+          path: dist/mcbopomofo-${{ matrix.arch }}.tar.bz2
+          if-no-files-found: error
+
+      - name: Upload arch-independent archive
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcbopomofo-any
+          path: dist/mcbopomofo-any.tar.bz2
+          if-no-files-found: error
